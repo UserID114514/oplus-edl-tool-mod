@@ -1341,7 +1341,7 @@ namespace OplusEdlTool.Services
             CancellationToken ct)
         {
             var actualNumSectors = (partition.FileSize + partition.SectorSize - 1) / partition.SectorSize;
-            if (partition.NumSectors > 0 && actualNumSectors > partition.NumSectors)
+            if (partition.NumSectors > 0 && (ulong)actualNumSectors > partition.NumSectors)
             {
                 onLine?.Invoke($"[Error] {partition.Name}: image size ({actualNumSectors} sectors) exceeds partition capacity ({partition.NumSectors} sectors); refusing to write past the partition");
                 return false;
@@ -1408,7 +1408,7 @@ namespace OplusEdlTool.Services
             var fileSize = partition.FileSize;
             var sectorSize = partition.SectorSize;
             var totalSectors = (fileSize + sectorSize - 1) / sectorSize;
-            if (partition.NumSectors > 0 && totalSectors > partition.NumSectors)
+            if (partition.NumSectors > 0 && (ulong)totalSectors > partition.NumSectors)
             {
                 onLine?.Invoke($"[Error] {partition.Name}: image size ({totalSectors} sectors) exceeds partition capacity ({partition.NumSectors} sectors); refusing to write past the partition");
                 return false;
