@@ -211,7 +211,7 @@ namespace OplusEdlTool.Services
             var device = BuildDevicePath(port);
             var args = $"--port={device} --signeddigests=\"{digestPath}\" --testvipimpact --noprompt --skip_configure --mainoutputdir=\"{workDir}\"";
             var res = await ProcessRunner.RunAsync(Path.Combine(tools, "fh_loader.exe"), args, workDir, onLine, onPercent);
-            return true;
+            return res.Item1 == 0;
         }
         public async Task<bool> SendVerifyAsync(string port)
         {
@@ -272,6 +272,7 @@ namespace OplusEdlTool.Services
                 return ("oplus_gptmain", "1");
             }
 
+            onLine?.Invoke("[Warning] RW mode detection failed for both probes; assuming oplus_gptmain mode 2. Verify the device/loader match before flashing.");
             return ("oplus_gptmain", "2");
         }
 
@@ -316,16 +317,27 @@ namespace OplusEdlTool.Services
                 var entPath = await ReadSectorsAsync(port, lun, peLba, sectors, sectorSize, $"gpt_ent_lun{lun}.bin", rwmode);
                 if (entPath == null) continue;
                 var ent = await File.ReadAllBytesAsync(entPath);
+                var peSizeInt = (int)peSize;
+                if (peSizeInt < 128)
+                {
+                    onLine?.Invoke($"[Warning] GPT LUN {lun}: invalid entry size {peSize}, skipping");
+                    continue;
+                }
                 for (int i = 0; i < peCount; i++)
                 {
-                    var off = i * (int)peSize;
-                    if (off + peSize > ent.Length) break;
+                    var off = i * peSizeInt;
+                    if (off + peSizeInt > ent.Length) break;
                     var typeGuidBytes = ent.Skip(off).Take(16).ToArray();
                     var firstLba = BitConverter.ToUInt64(ent, off + 32);
                     var lastLba = BitConverter.ToUInt64(ent, off + 40);
                     var nameBytes = ent.Skip(off + 56).Take(72).ToArray();
                     var name = System.Text.Encoding.Unicode.GetString(nameBytes).TrimEnd('\0');
                     if (firstLba == 0 && lastLba == 0) continue;
+                    if (lastLba < firstLba)
+                    {
+                        onLine?.Invoke($"[Warning] GPT LUN {lun}: partition {name} has invalid range, skipping");
+                        continue;
+                    }
                     var item = new PartitionEntry
                     {
                         Name = string.IsNullOrWhiteSpace(name) ? ($"part{lun}_{i}") : name,
@@ -353,7 +365,7 @@ namespace OplusEdlTool.Services
             var workDir = GetWorkDir();
             var sectorSize = StorageType == "emmc" ? 512 : 4096;
             var len = new FileInfo(filePath).Length;
-            var numSectors = (ulong)len / (ulong)sectorSize;
+            var numSectors = ((ulong)len + (ulong)sectorSize - 1) / (ulong)sectorSize;
             var xml = Path.Combine(workDir, "cmd.xml");
             var fileName = Path.GetFileName(filePath);
             var content = "<?xml version=\"1.0\" ?><data><program SECTOR_SIZE_IN_BYTES=\"" + sectorSize + "\" filename=\"" + fileName + "\" physical_partition_number=\"" + part.Lun + "\" label=\"write\" start_sector=\"" + part.FirstLBA + "\" num_partition_sectors=\"" + numSectors + "\"/></data>";
@@ -372,7 +384,7 @@ namespace OplusEdlTool.Services
             var workDir = GetWorkDir();
             var sectorSize = StorageType == "emmc" ? 512 : 4096;
             var len = new FileInfo(filePath).Length;
-            var numSectors = (ulong)len / (ulong)sectorSize;
+            var numSectors = ((ulong)len + (ulong)sectorSize - 1) / (ulong)sectorSize;
             var xml = Path.Combine(workDir, "cmd.xml");
             var gptBackupName = $"gpt_backup{lun}.bin";
             var gptBackupPath = Path.Combine(workDir, gptBackupName);
@@ -945,6 +957,11 @@ namespace OplusEdlTool.Services
             var sectorSize = StorageType == "emmc" ? 512 : 4096;
             var xml = Path.Combine(workDir, "cmd.xml");
             var label = string.IsNullOrWhiteSpace(part.Name) ? "partition" : part.Name;
+            if (part.LastLBA < part.FirstLBA)
+            {
+                onLine?.Invoke($"[Error] Invalid partition range for {label}: LastLBA {part.LastLBA} < FirstLBA {part.FirstLBA}, refusing to erase");
+                return false;
+            }
             var content = $"<?xml version=\"1.0\" ?><data><erase SECTOR_SIZE_IN_BYTES=\"{sectorSize}\" label=\"{label}\" physical_partition_number=\"{part.Lun}\" start_sector=\"{part.FirstLBA}\" num_partition_sectors=\"{part.LastLBA - part.FirstLBA + 1}\" /></data>";
             await File.WriteAllTextAsync(xml, content);
             var device = BuildDevicePath(port);
@@ -1190,6 +1207,11 @@ namespace OplusEdlTool.Services
             var sectorSize = StorageType == "emmc" ? 512 : 4096;
             var fileSize = new FileInfo(filePath).Length;
             var actualNumSectors = (fileSize + sectorSize - 1) / sectorSize;
+            if (partition.SizeBytes > 0 && (ulong)fileSize > partition.SizeBytes)
+            {
+                onLine?.Invoke($"[Error] {partition.Name}: image size ({fileSize} bytes) exceeds partition capacity ({partition.SizeBytes} bytes); refusing to write past the partition");
+                return false;
+            }
             var xmlContent = $"<?xml version=\"1.0\" ?><data>" +
                 $"<program SECTOR_SIZE_IN_BYTES=\"{sectorSize}\" " +
                 $"filename=\"{Path.GetFileName(filePath)}\" " +
@@ -1319,6 +1341,11 @@ namespace OplusEdlTool.Services
             CancellationToken ct)
         {
             var actualNumSectors = (partition.FileSize + partition.SectorSize - 1) / partition.SectorSize;
+            if (partition.NumSectors > 0 && actualNumSectors > partition.NumSectors)
+            {
+                onLine?.Invoke($"[Error] {partition.Name}: image size ({actualNumSectors} sectors) exceeds partition capacity ({partition.NumSectors} sectors); refusing to write past the partition");
+                return false;
+            }
             var xmlContent = $"<?xml version=\"1.0\" ?><data>" +
                 $"<program SECTOR_SIZE_IN_BYTES=\"{partition.SectorSize}\" " +
                 $"filename=\"{spoofFilename}\" " +
@@ -1380,6 +1407,12 @@ namespace OplusEdlTool.Services
         {
             var fileSize = partition.FileSize;
             var sectorSize = partition.SectorSize;
+            var totalSectors = (fileSize + sectorSize - 1) / sectorSize;
+            if (partition.NumSectors > 0 && totalSectors > partition.NumSectors)
+            {
+                onLine?.Invoke($"[Error] {partition.Name}: image size ({totalSectors} sectors) exceeds partition capacity ({partition.NumSectors} sectors); refusing to write past the partition");
+                return false;
+            }
             var chunkSizeBytes = CHUNK_SIZE;
             var chunkSizeSectors = chunkSizeBytes / sectorSize;
 

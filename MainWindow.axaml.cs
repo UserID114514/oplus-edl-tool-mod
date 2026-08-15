@@ -1392,11 +1392,13 @@ namespace OplusEdlTool
 
                     foreach (var partition in lunGroup.OrderBy(p => p.FirstLBA))
                     {
-                        var sectorSize = 4096;
+                        var sectorSize = edl.StorageType == "emmc" ? 512 : 4096;
                         if (!string.IsNullOrEmpty(partition.SectorSize) && int.TryParse(partition.SectorSize, out var parsedSize))
                             sectorSize = parsedSize;
 
-                        var numSectors = partition.LastLBA - partition.FirstLBA + 1;
+                        var numSectors = partition.LastLBA >= partition.FirstLBA
+                            ? partition.LastLBA - partition.FirstLBA + 1
+                            : 0UL;
                         if (!string.IsNullOrEmpty(partition.NumSectors) && ulong.TryParse(partition.NumSectors, out var parsedNumSectors))
                             numSectors = parsedNumSectors;
 

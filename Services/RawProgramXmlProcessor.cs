@@ -62,10 +62,12 @@ namespace OplusEdlTool.Services
                     
                     if (gptPartitions.Count > 0)
                     {
-                        partitionDict = gptPartitions.ToDictionary(
-                            p => p.Label, 
-                            p => p, 
-                            StringComparer.OrdinalIgnoreCase);
+                        partitionDict = new Dictionary<string, GptPartitionInfo>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var p in gptPartitions)
+                        {
+                            if (!partitionDict.ContainsKey(p.Label))
+                                partitionDict[p.Label] = p;
+                        }
                     }
                 }
 

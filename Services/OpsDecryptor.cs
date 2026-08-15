@@ -18,6 +18,21 @@ namespace OplusEdlTool.Services
         public OpsDecryptor(Action<string>? log = null) { _log = log; }
         private void Log(string msg) => _log?.Invoke(msg);
 
+        // Block zip-slip: ensure a firmware-declared destination stays inside the extract dir.
+        private static bool IsSafeExtractPath(string destPath, string destFile)
+        {
+            try
+            {
+                var fullRoot = Path.GetFullPath(destPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                var fullDest = Path.GetFullPath(destFile);
+                return fullDest.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public string? Decrypt(string opsFilePath, string? outputDir = null)
         {
             if (!File.Exists(opsFilePath)) { Log($"File not found: {opsFilePath}"); return null; }
@@ -212,6 +227,11 @@ namespace OplusEdlTool.Services
         {
             Log($"Extracting {wfilename}");
             string destFile = Path.Combine(destPath, wfilename);
+            if (!IsSafeExtractPath(destPath, destFile))
+            {
+                Log($"Skipping unsafe path: {wfilename}");
+                return;
+            }
             Directory.CreateDirectory(Path.GetDirectoryName(destFile) ?? destPath);
             using var rf = new FileStream(srcFile, FileMode.Open, FileAccess.Read);
             using var wf = new FileStream(destFile, FileMode.Create, FileAccess.Write);
@@ -232,6 +252,11 @@ namespace OplusEdlTool.Services
         {
             Log($"Decrypting {wfilename}");
             string destFile = Path.Combine(destPath, wfilename);
+            if (!IsSafeExtractPath(destPath, destFile))
+            {
+                Log($"Skipping unsafe path: {wfilename}");
+                return;
+            }
             Directory.CreateDirectory(Path.GetDirectoryName(destFile) ?? destPath);
             using var rf = new FileStream(srcFile, FileMode.Open, FileAccess.Read);
             rf.Seek(start, SeekOrigin.Begin);

@@ -65,7 +65,13 @@ namespace OplusEdlTool.Services
                 ulong partitionEntryLba = BitConverter.ToUInt64(data, headerOffset + 72);
                 uint numEntries = BitConverter.ToUInt32(data, headerOffset + 80);
                 uint entrySize = BitConverter.ToUInt32(data, headerOffset + 84);
-                int entryOffset = (int)(partitionEntryLba * (ulong)sectorSize);
+                ulong entryOffsetUlong = partitionEntryLba * (ulong)sectorSize;
+                if (entryOffsetUlong > int.MaxValue)
+                {
+                    Log("GPT partition entry offset too large");
+                    return (partitions, sectorSize);
+                }
+                int entryOffset = (int)entryOffsetUlong;
 
                 for (int i = 0; i < numEntries; i++)
                 {
@@ -90,6 +96,7 @@ namespace OplusEdlTool.Services
                     Array.Copy(data, offset + 56, nameBytes, 0, 72);
                     string name = Encoding.Unicode.GetString(nameBytes).TrimEnd('\0');
 
+                    if (endLba < startLba) continue;
                     ulong numSectors = endLba - startLba + 1;
                     ulong startByteHex = startLba * (ulong)sectorSize;
                     double sizeKb = numSectors * (ulong)sectorSize / 1024.0;
