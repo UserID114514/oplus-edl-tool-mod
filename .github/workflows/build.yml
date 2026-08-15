@@ -20,3 +20,12 @@ jobs:
 
       - name: Build Release
         run: dotnet build -c Release --no-restore
+
+      - name: Publish (Native AOT, single file)
+        run: dotnet publish -c Release --no-restore
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OplusEdlTool-win-x64
+          path: bin/Release/net8.0/win-x64/publish/
