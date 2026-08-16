@@ -272,8 +272,10 @@ namespace OplusEdlTool.Services
                 return ("oplus_gptmain", "1");
             }
 
-            onLine?.Invoke("[Warning] RW mode detection failed for both probes; assuming oplus_gptmain mode 2. Verify the device/loader match before flashing.");
-            return ("oplus_gptmain", "2");
+            throw new InvalidOperationException(
+                "Failed to detect the device's special RW mode (oplus_gptbackup and oplus_gptmain probes both failed). " +
+                "The device may not be in Firehose mode, the loader (devprg) may be mismatched, or the session is broken. " +
+                "Re-enter 9008 mode and verify the device programmer file before flashing.");
         }
 
         private async Task<string?> ReadSectorsAsync(string port, int lun, ulong startSector, ulong numSectors, int sectorSize, string fileName, string rwmode)
