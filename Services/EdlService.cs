@@ -1307,7 +1307,15 @@ namespace OplusEdlTool.Services
                 onLine?.Invoke($"[Flash] Writing {partition.Name} (LUN{partition.Lun}, {FormatFileSize(fileSize)})...");
 
                 bool success;
-                if (fileSize > CHUNK_THRESHOLD)
+                var isSparse = ImageUtils.IsSparseImage(partition.FilePath);
+                if (isSparse)
+                {
+                    // Sparse images must not be chunk-written raw; let fh_loader expand them via sparse="true".
+                    onLine?.Invoke($"[Strategy] Sparse image detected ({partition.Name}); single write with sparse expansion");
+                    success = await FlashPartitionSingleAsync(
+                        fhLoader, device, workDir, partition, spoofLabel, spoofFilename, isSparse, cancellationToken);
+                }
+                else if (fileSize > CHUNK_THRESHOLD)
                 {
                     onLine?.Invoke($"[Strategy] Chunked write enabled ({fileSize / 1024 / 1024} MB)");
                     success = await FlashPartitionChunkedAsync(
@@ -1316,7 +1324,7 @@ namespace OplusEdlTool.Services
                 else
                 {
                     success = await FlashPartitionSingleAsync(
-                        fhLoader, device, workDir, partition, spoofLabel, spoofFilename, cancellationToken);
+                        fhLoader, device, workDir, partition, spoofLabel, spoofFilename, isSparse, cancellationToken);
                 }
 
                 if (!success)
@@ -1338,6 +1346,7 @@ namespace OplusEdlTool.Services
             FlashPartitionInfo partition,
             string spoofLabel,
             string spoofFilename,
+            bool isSparse,
             CancellationToken ct)
         {
             var actualNumSectors = (partition.FileSize + partition.SectorSize - 1) / partition.SectorSize;
@@ -1352,7 +1361,7 @@ namespace OplusEdlTool.Services
                 $"label=\"{spoofLabel}\" " +
                 $"num_partition_sectors=\"{actualNumSectors}\" " +
                 $"physical_partition_number=\"{partition.Lun}\" " +
-                $"sparse=\"false\" " +
+                $"sparse=\"{((isSparse) ? "true" : "false")}\" " +
                 $"start_sector=\"{partition.StartSector}\" />" +
                 $"</data>";
 
