@@ -195,6 +195,32 @@ namespace OplusEdlTool.Services
                 PortStatusChanged -= OnPortStatusChanged;
             }
         }
+
+        /// <summary>
+        /// One-shot fresh scan for the 9008 port (independent of the background monitor).
+        /// Used to re-resolve the COM port after the programmer upload may have re-enumerated USB.
+        /// Returns null if no port is found.
+        /// </summary>
+        public async Task<string?> ReDetectPortAsync(CancellationToken ct = default)
+        {
+            try
+            {
+                var toolsDir = FindToolsDir();
+                var lsusb = Path.Combine(toolsDir, "lsusb.exe");
+                for (int attempt = 0; attempt < 3; attempt++)
+                {
+                    var res = await ProcessRunner.RunAsync(lsusb, "", toolsDir, null, null, timeoutMs: 3000);
+                    var m = EdlPortRegex.Match(res.Item2 ?? "");
+                    if (m.Success) return "COM" + m.Groups["n"].Value;
+                    await Task.Delay(500, ct);
+                }
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
         public async Task<bool> SendProgrammerAsync(string port, string devprgPath)
         {
             var tools = FindToolsDir();
@@ -1351,7 +1377,13 @@ namespace OplusEdlTool.Services
             bool isSparse,
             CancellationToken ct)
         {
-            var actualNumSectors = (partition.FileSize + partition.SectorSize - 1) / partition.SectorSize;
+            long imageSize = partition.FileSize;
+            if (isSparse)
+            {
+                var expanded = ImageUtils.GetSparseExpandedSize(partition.FilePath);
+                if (expanded.HasValue && expanded.Value > 0) imageSize = expanded.Value;
+            }
+            var actualNumSectors = (imageSize + partition.SectorSize - 1) / partition.SectorSize;
             if (partition.NumSectors > 0 && (ulong)actualNumSectors > partition.NumSectors)
             {
                 onLine?.Invoke($"[Error] {partition.Name}: image size ({actualNumSectors} sectors) exceeds partition capacity ({partition.NumSectors} sectors); refusing to write past the partition");

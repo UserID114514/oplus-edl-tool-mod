@@ -140,6 +140,10 @@ namespace OplusEdlTool.Services
         public static string MergeSuperMessage => LanguageService.IsChinese 
             ? "找到 super_def.json，包含 {0} 个分区。\n\n是否要将它们合并为 super.img？\n\n这可能需要几分钟时间。" 
             : "Found super_def.json with {0} partitions.\n\nDo you want to merge them into super.img?\n\nThis may take several minutes.";
+        public static string SuperSubPartitionTitle => LanguageService.IsChinese ? "Super 子分区写入" : "Super Sub-partition Write";
+        public static string SuperSubPartitionMessage => LanguageService.IsChinese
+            ? "检测到固件支持 super 子分区直接写入（免合并）。\n\n是 = 启用子分区写入（BETA，免合并、免 15GB super.img，需设备支持且有一定风险）\n否 = 标准合并（simg2img + lpmake 生成 super.img）"
+            : "This firmware supports super sub-partition write (no merge).\n\nYes = Enable sub-partition write (BETA, no merge, no 15GB super.img, requires device support and involves certain risks)\nNo = Standard merge (simg2img + lpmake into super.img)";
         public static string NoSelection => LanguageService.IsChinese ? "未选择" : "No Selection";
         public static string PleaseSelectXml => LanguageService.IsChinese ? "请至少选择一个 XML 文件来加载。" : "Please select at least one XML file to load.";
         public static string Error => LanguageService.IsChinese ? "错误" : "Error";

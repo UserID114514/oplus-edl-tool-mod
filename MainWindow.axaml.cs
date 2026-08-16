@@ -127,6 +127,10 @@ namespace OplusEdlTool
         private string? currentRwMode;
         private string? romImagesPath;
         private string[]? rawProgramFiles;
+        private readonly SuperSubPartitionService _subPartitionService;
+        private bool _useSuperSubPartitionMode;
+        private string? _superDefJsonPath;
+        private string? _superMetaRawPath;
 
         public MainWindow()
         {
@@ -134,6 +138,7 @@ namespace OplusEdlTool
             InitializeLogFile();
             edl = new EdlService(AppendLog, UpdateProgress);
             _xmlProcessor = new RawProgramXmlProcessor(AppendLog);
+            _subPartitionService = new SuperSubPartitionService(AppendLog);
             InitializeUI();
             ApplyLanguage();
             edl.PortStatusChanged += OnPortStatusChanged;
@@ -732,6 +737,25 @@ namespace OplusEdlTool
                     return;
                 }
 
+                // Check whether the firmware supports sub-partition write (no merge needed).
+                if (_subPartitionService.CheckSupport(romBaseDir, out var subDefJson, out var subMetaRaw))
+                {
+                    _superDefJsonPath = subDefJson;
+                    _superMetaRawPath = subMetaRaw;
+                    var modeResult = await ShowMessageBox(
+                        Lang.SuperSubPartitionMessage,
+                        Lang.SuperSubPartitionTitle,
+                        MessageBoxButtons.YesNo);
+                    if (modeResult == MessageBoxResult.Yes)
+                    {
+                        _useSuperSubPartitionMode = true;
+                        AppendLog("Super sub-partition write mode enabled (BETA, no merge).");
+                        return;
+                    }
+                    AppendLog("Sub-partition write declined, using standard merge.");
+                    _useSuperSubPartitionMode = false;
+                }
+
                 var partitionsWithPath = config.Partitions.Where(p => !string.IsNullOrEmpty(p.Path)).ToList();
                 if (partitionsWithPath.Count == 0)
                 {
@@ -775,6 +799,62 @@ namespace OplusEdlTool
             {
                 AppendLog($"Error checking super partition: {ex.Message}");
             }
+        }
+
+        private async Task<bool> FlashSuperSubPartitionsAsync(string port, ulong superStartSector, int superLun, int sectorSize, CancellationToken token)
+        {
+            if (string.IsNullOrEmpty(_superDefJsonPath) || string.IsNullOrEmpty(_superMetaRawPath) || !File.Exists(_superMetaRawPath))
+            {
+                AppendLog("[Error] super_def.json / super_meta.raw not available for sub-partition write");
+                return false;
+            }
+
+            var meta = _subPartitionService.ParseSuperMeta(_superMetaRawPath);
+            if (meta == null)
+            {
+                AppendLog("[Error] Failed to parse super_meta.raw (invalid lp_metadata)");
+                return false;
+            }
+
+            var config = new SuperMergeService(AppendLog).ParseSuperDefJson(_superDefJsonPath);
+            if (config == null)
+            {
+                AppendLog("[Error] Failed to parse super_def.json");
+                return false;
+            }
+
+            // ROM root = parent of META (which holds super_def.json)
+            var romBaseDir = Path.GetDirectoryName(Path.GetDirectoryName(_superDefJsonPath)) ?? "";
+
+            AppendLog($"Super sub-partition write: {meta.Partitions.Count} partitions, slot_count={meta.Geometry.MetadataSlotCount}");
+
+            // 1) Metadata region -> temp file, flashed first.
+            var metaBuf = _subPartitionService.BuildMetadataBuffer(meta);
+            var metaFile = Path.Combine(Path.GetTempPath(), $"super_metadata_{Guid.NewGuid():N}.bin");
+            await File.WriteAllBytesAsync(metaFile, metaBuf, token);
+            int metaNumSectors = (metaBuf.Length + sectorSize - 1) / sectorSize;
+
+            var allTasks = new List<EdlService.FlashPartitionInfo>
+            {
+                new EdlService.FlashPartitionInfo
+                {
+                    Name = "super_metadata",
+                    FilePath = metaFile,
+                    Lun = superLun.ToString(),
+                    StartSector = superStartSector,
+                    NumSectors = (ulong)metaNumSectors,
+                    SectorSize = sectorSize
+                }
+            };
+
+            // 2) Logical partitions at their extents.
+            var subTasks = _subPartitionService.BuildSubPartitionTasks(config, meta, romBaseDir, superStartSector, superLun, sectorSize);
+            allTasks.AddRange(subTasks);
+
+            AppendLog($"Flashing super metadata + {subTasks.Count} sub-partitions (no merge)...");
+            var ok = await edl.FlashPartitionsWithSpoofAsync(port, allTasks, token);
+            try { File.Delete(metaFile); } catch { }
+            return ok;
         }
 
         private void LoadPartitionsFromXml()
@@ -1575,6 +1655,21 @@ namespace OplusEdlTool
                         AppendLog($"[GPT] {partition.Name} flashed successfully");
                     }
                 }
+
+                // Super sub-partition write: flash metadata + logical partitions directly (no merge).
+                var superPartRow = normalPartitions.FirstOrDefault(r => r.Name.Equals("super", StringComparison.OrdinalIgnoreCase));
+                if (_useSuperSubPartitionMode && superPartRow != null)
+                {
+                    AppendLog("Flashing super sub-partitions (no merge)...");
+                    var subOk = await FlashSuperSubPartitionsAsync(port, superPartRow.FirstLBA, superPartRow.Lun, sectorSize, _cts.Token);
+                    if (!subOk)
+                    {
+                        AppendLog("Super sub-partition write failed");
+                        return;
+                    }
+                    normalPartitions = normalPartitions.Where(r => r != superPartRow).ToList();
+                }
+
                 if (normalPartitions.Count > 0)
                 {
                     AppendLog("Step 2: Flashing normal partitions (spoof mode)...");
@@ -1762,6 +1857,14 @@ namespace OplusEdlTool
                     if (token.IsCancellationRequested) { AppendLog("Task cancelled"); return; }
                     if (!ok) { AppendLog("Failed to send programmer"); return; }
 
+                    // Programmer upload (Sahara->Firehose) can re-enumerate USB and change the COM port.
+                    var redetected = await edl.ReDetectPortAsync(token);
+                    if (!string.IsNullOrEmpty(redetected) && redetected != port)
+                    {
+                        AppendLog($"[Port] COM port changed {port} -> {redetected}");
+                        port = redetected;
+                    }
+
                     AppendLog("Sending digest...");
                     ok = await edl.SendDigestsAsync(port, Digest.Text);
                     if (token.IsCancellationRequested) { AppendLog("Task cancelled"); return; }
@@ -1833,6 +1936,20 @@ namespace OplusEdlTool
                         }
                         AppendLog($"[GPT] {partition.Name} flashed successfully");
                     }
+                }
+
+                // Super sub-partition write: flash metadata + logical partitions directly (no merge).
+                var superPartRow = normalPartitions.FirstOrDefault(r => r.Name.Equals("super", StringComparison.OrdinalIgnoreCase));
+                if (_useSuperSubPartitionMode && superPartRow != null)
+                {
+                    AppendLog("Flashing super sub-partitions (no merge)...");
+                    var subOk = await FlashSuperSubPartitionsAsync(port, superPartRow.FirstLBA, superPartRow.Lun, sectorSize, token);
+                    if (!subOk)
+                    {
+                        AppendLog("Super sub-partition write failed");
+                        return;
+                    }
+                    normalPartitions = normalPartitions.Where(r => r != superPartRow).ToList();
                 }
 
                 if (normalPartitions.Count > 0)
